@@ -1,0 +1,36 @@
+SELECT
+    moment,
+    SUM(income_sum) AS total_income,
+    expense_sum,
+    paymentPurpose
+FROM (
+    SELECT
+        CAST(SUBSTRING(moment, 1, 10) AS Date) AS moment,
+        CAST(sum AS Float64) / 100 AS income_sum,
+        0 AS expense_sum,
+        NULL AS paymentPurpose
+    FROM training_ms.brv_cashin
+    UNION ALL
+    SELECT
+        CAST(SUBSTRING(moment, 1, 10) AS Date) AS moment,
+        CAST(sum AS Float64) / 100 AS income_sum,
+        0 AS expense_sum,
+        NULL AS paymentPurpose
+    FROM training_ms.brv_paymentin
+    UNION ALL
+    SELECT
+        CAST(SUBSTRING(moment, 1, 10) AS Date) AS moment,
+        0 AS income_sum,
+        CAST(sum AS Float64) / 100 AS expense_sum,
+        paymentPurpose
+    FROM training_ms.brv_cashout
+    UNION ALL
+    SELECT
+        CAST(SUBSTRING(moment, 1, 10) AS Date) AS moment,
+        0 AS income_sum,
+        CAST(sum AS Float64) / 100 AS expense_sum,
+        paymentPurpose
+    FROM training_ms.brv_paymentout
+) AS combined
+GROUP BY moment, paymentPurpose, expense_sum
+ORDER BY moment, paymentPurpose
