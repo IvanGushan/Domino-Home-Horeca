@@ -1,0 +1,86 @@
+WITH 
+    -- Уникальные позиции продаж
+    unique_positions AS (
+        SELECT 
+            entity_id,
+            assortment,
+            quantity,
+            price,
+            discount,
+            ROW_NUMBER() OVER (PARTITION BY entity_id ORDER BY entity_id) AS row_num
+        FROM training_ms.brv_retaildemand_positions
+    ),
+    -- Уникальные товары
+    unique_products AS (
+        SELECT 
+            href,
+            name,
+            -- Присваиваем 'Основные товары/УЦЕНКА' если pathName пустой и название содержит 'Уценка'
+            CASE 
+                WHEN (pathName IS NULL OR pathName = '') AND (name LIKE '%Уценка%' OR name LIKE '%уценка%') THEN 'Основные товары/УЦЕНКА'
+                ELSE pathName
+            END AS pathName,
+            SUBSTRING_INDEX(SUBSTRING_INDEX(pathName, '/', 1), '/', -1) AS group_level_0,
+            SUBSTRING_INDEX(SUBSTRING_INDEX(pathName, '/', 2), '/', -1) AS group_level_1,
+            SUBSTRING_INDEX(SUBSTRING_INDEX(pathName, '/', 3), '/', -1) AS group_level_2,
+            SUBSTRING_INDEX(SUBSTRING_INDEX(pathName, '/', 4), '/', -1) AS group_level_3,
+            ROW_NUMBER() OVER (PARTITION BY href ORDER BY href) AS row_num
+        FROM training_ms.brv_product
+    ),
+    -- Сумма возвратов по заказам
+    returns_summary AS (
+        SELECT
+            SUBSTRING_INDEX(SUBSTRING_INDEX(demand, '/', -1), '/', -1) AS demand_id, -- Извлечение id заказа из поля demand
+            SUM(
+                IFNULL(toFloat64OrNull(cashSum), 0) + 
+                IFNULL(toFloat64OrNull(noCashSum), 0) + 
+                IFNULL(toFloat64OrNull(qrSum), 0)
+            ) / 100 AS total_returns -- Преобразуем сумму из тиын в тенге
+        FROM training_ms.brv_retailsalesreturn
+        WHERE demand != '' AND demand IS NOT NULL -- Исключаем пустые строки и NULL
+        GROUP BY demand_id
+    )
+SELECT DISTINCT
+    rd.id AS retaildemand_id,
+    -- Преобразуем moment в дату
+    CAST(rd.moment AS DATE) AS moment,
+    -- Сумма продаж в тенге
+    CAST(rd.sum AS DECIMAL(10, 2)) / 100 AS retaildemand_sum,
+    -- Преобразуем строки в дробное число (сумма возвратов в тенге)
+    CAST(rd.cashSum AS DECIMAL(10, 2)) / 100 AS cashSum,
+    CAST(rd.noCashSum AS DECIMAL(10, 2)) / 100 AS noCashSum,
+    CAST(rd.qrSum AS DECIMAL(10, 2)) / 100 AS qrSum,
+    -- Преобразуем строки в дробное число (предоплата в тенге)
+    CAST(rd.prepaymentCashSum AS DECIMAL(10, 2)) / 100 AS prepaymentCashSum,
+    CAST(rd.prepaymentNoCashSum AS DECIMAL(10, 2)) / 100 AS prepaymentNoCashSum,
+    CAST(rd.prepaymentQrSum AS DECIMAL(10, 2)) / 100 AS prepaymentQrSum,
+    rp.entity_id,
+    rp.assortment,
+    -- Преобразуем quantity из строки в дробное число
+    CAST(rp.quantity AS DECIMAL(10, 2)) AS quantity,
+    -- Преобразуем price из строки в дробное число и делим на 100
+    CAST(rp.price AS DECIMAL(10, 2)) / 100 AS price,
+    -- Discount оставляем как есть, поскольку это доля скидки
+    CAST(rp.discount AS DECIMAL(10, 4)) AS discount,
+    s.href AS store_href,
+    s.name AS store_name,
+    p.href AS product_href,
+    p.name AS product_name,
+    p.group_level_0,
+    p.group_level_1,
+    p.group_level_2,
+    p.group_level_3,
+    -- Добавляем сумму возвратов (в тенге)
+    IFNULL(rs.total_returns, 0) AS total_returns,
+    -- Сумма продаж с учетом возвратов (в тенге)
+    CAST(rd.sum AS DECIMAL(10, 2)) / 100 - IFNULL(rs.total_returns, 0) AS net_sales
+FROM
+    training_ms.brv_retaildemand rd
+JOIN
+    unique_positions rp ON rd.id = rp.entity_id AND rp.row_num = 1
+LEFT JOIN
+    training_ms.brv_store s ON rd.store = s.href
+LEFT JOIN
+    unique_products p ON rp.assortment = p.href AND p.row_num = 1
+LEFT JOIN
+    returns_summary rs ON SUBSTRING_INDEX(SUBSTRING_INDEX(rd.href, '/', -1), '/', -1) = rs.demand_id
